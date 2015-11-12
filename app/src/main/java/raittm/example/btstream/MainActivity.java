@@ -120,6 +120,7 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
 
     List<String> dirs;
     ListView selectListView;
+    int selectListViewFirstVisibleItem=0;
     ArrayAdapter<String> selectAdapter =null;
     File currentDir;
     File previousDir;
@@ -289,6 +290,8 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
                 setContentView(R.layout.select_tab);
                 if (currentDir!=null) fillSelectListViewWithFilenames(currentDir);
 
+                if (selectListView!=null) selectListView.setSelection(selectListViewFirstVisibleItem);
+
                 break;
             case QUEUE_TAB:
                 setContentView(R.layout.queue_tab);
@@ -302,7 +305,16 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
 
     @Override
     public void onTabUnselected(ActionBar.Tab tab, FragmentTransaction ft) {
+        switch (tab.getPosition()) {
+            case SELECT_TAB:
+                selectListViewFirstVisibleItem=selectListView.getFirstVisiblePosition();
+                if (D) Log.d(TAG,"Top="+selectListViewFirstVisibleItem);
 
+                break;
+            case QUEUE_TAB:
+                break;
+            default:
+        }
     }
 
     @Override
@@ -527,13 +539,13 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
                         mControlThread.sendFileName(selectedFile.getName());
                         mControlThread.sendFileSize(selectedFile.length());
 
-                        if (mAcceptThread != null) {
-                            mAcceptThread.cancel();
-                            mAcceptThread = null;
-                        }
                         if (mDataThread != null) {
                             mDataThread.cancel();
                             mDataThread = null;
+                        }
+                        if (mAcceptThread != null) {
+                            mAcceptThread.cancel();
+                            mAcceptThread = null;
                         }
 
                         mState = STATE_LISTEN;
@@ -674,13 +686,13 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
                             mControlThread.sendFileName(selectedFile.getName());
                             mControlThread.sendFileSize(selectedFile.length());
 
-                            if (mAcceptThread != null) {
-                                mAcceptThread.cancel();
-                                mAcceptThread = null;
-                            }
                             if (mDataThread != null) {
                                 mDataThread.cancel();
                                 mDataThread = null;
+                            }
+                            if (mAcceptThread != null) {
+                                mAcceptThread.cancel();
+                                mAcceptThread = null;
                             }
 
                             mState = STATE_LISTEN;
@@ -1196,21 +1208,23 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
                         }
 
                         if (!playQueueList.isEmpty()) {
+
+                            if (mDataThread != null) {
+                                mDataThread.cancel();
+                                mDataThread = null;
+                            }
+
+                            if (mAcceptThread != null) {
+                                mAcceptThread.cancel();
+                                mAcceptThread = null;
+                            }
+
                             File selectedFile = new File(playQueueList.get(0).getName());
 
                             if (D) Log.d(TAG, "Playing next " + selectedFile.getName());
 
                             mControlThread.sendFileName(selectedFile.getName());
                             mControlThread.sendFileSize(selectedFile.length());
-
-                            if (mAcceptThread != null) {
-                                mAcceptThread.cancel();
-                                mAcceptThread = null;
-                            }
-                            if (mDataThread != null) {
-                                mDataThread.cancel();
-                                mDataThread = null;
-                            }
 
                             mState = STATE_LISTEN;
                             mAcceptThread = new AcceptThread();
@@ -1320,7 +1334,7 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
         private final OutputStream mmOutStream;
         private final InputStream mmInStream;
 
-        private final int FILEBUFFER_SIZE=(int)1024*1024*8;
+        int fileBufferSize;
 
         boolean terminateRequested=false;
 
@@ -1345,9 +1359,7 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
             f=new File(playQueueList.get(0).getName());
             bytesToSend = (int) f.length();
 
-            fileContentPart=new byte[FILEBUFFER_SIZE];
-
-            if (D) Log.d(TAG, "File size " + f.length() + " bytes (using " + fileContentPart.length + " chunks)");
+            fileBufferSize=2048;//mmSocket.getMaxTransmitPacketSize();
 
         }
 
@@ -1357,6 +1369,9 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
             try {
                 fin = new FileInputStream(f.getAbsolutePath());
 
+                fileContentPart=new byte[fileBufferSize];
+
+                if (D) Log.d(TAG, "File size " + f.length() + " bytes (using " + fileBufferSize + " chunks)");
 
                 while (bytesToSend > 0) {
 
@@ -1368,22 +1383,27 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
 
                         mmOutStream.write(fileContentPart, 0, bytesRead);
 
+                        bytesToSend-=bytesRead;
+
+                        //if (D) Log.d(TAG, "Sent " + bytesRead + " (left " +bytesToSend+")");
+
                     } catch (IOException e) {
                         Log.e(TAG, "Problem sending file " + e);
+                        break;
                     }
-
-                    if (D) Log.d(TAG, "Sent " + bytesRead);
-
-                    bytesToSend-=bytesRead;
                 }
 
                 fin.close();
+                fileContentPart=null;
+                System.gc();
 
             } catch (FileNotFoundException e) {
                 Log.e(TAG, "File not found");
             } catch (IOException e) {
                 Log.e(TAG, "Problem reading file");
             }
+
+            if (D) Log.d(TAG, "END DataThread");
         }
 /*
         public void sendComplete() {
