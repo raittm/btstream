@@ -19,7 +19,6 @@ import android.os.Handler;
 import android.os.Message;
 import android.os.PowerManager;
 import android.os.Process;
-import android.provider.Settings;
 import android.support.v4.app.FragmentTransaction;
 import android.support.v7.app.ActionBar;
 import android.support.v7.app.AppCompatActivity;
@@ -51,7 +50,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
@@ -60,7 +58,8 @@ import java.util.UUID;
 
 public class MainActivity extends AppCompatActivity implements ActionBar.TabListener {
     private static final String TAG = "btStream";
-    private static boolean D=true;
+    private static boolean D=false;
+    private static boolean DD=false;
 
     private final UUID DATA_UUID = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb");
     private final UUID CONTROL_UUID = UUID.fromString("00001101-0000-1000-8000-00805f9b34fc");
@@ -89,6 +88,8 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
     public static final int STS_ACK=102;
     public static final int STS_CONNECTED=103;
     public static final int STS_DISCONNECTED=104;
+    public static final int STS_CURRENTPOS=105;
+    public static final int STS_HEARTBEAT=106;
 
     public static final int REFRESH_QUEUEVIEW=201;
 
@@ -100,6 +101,9 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
     public static final int STATE_LISTEN = 1;     // now listening for incoming connections
     public static final int STATE_CONNECTING = 2; // now initiating an outgoing connection
     public static final int STATE_CONNECTED = 3;  // now connected to a remote device
+
+    public static final int DATA_ACK_SIZE=32*1024; // believe this is half the bluetooth stack buffer size
+    public static final int DATA_BUFFER_SIZE=DATA_ACK_SIZE;
 
     public static final int DIR_NONE=0;
     public static final int DIR_LEFT=1;
@@ -1022,13 +1026,22 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
                                 waitingForLength = true;
 
                                 String[] keyvalue = s.toString().split("=");
-                                if (D) Log.d(TAG, "" + keyvalue[0] + " " + keyvalue[1]);
+                                if (DD) Log.d(TAG, "" + keyvalue[0] + " " + keyvalue[1]);
 
                                 if (keyvalue[0].equals("Status")) {
                                     if (keyvalue[1].equals("PlayFinished")) {
                                         mHandler.obtainMessage(STS_PLAYFINISHED).sendToTarget();
                                     }
                                 }
+                                else if (keyvalue[0].equals("CurrentPos")) {
+                                    mHandler.obtainMessage(STS_CURRENTPOS,keyvalue[1]).sendToTarget();
+                                }
+
+                                //
+                                // If there are any periodic messages, they must be acknowledged
+                                // otherwise the bluetooth stack will close the socket if there
+                                // is too much one way traffic on a socket
+                                //
 
                             }
                         }
@@ -1142,6 +1155,15 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
 
         }
 
+        public void sendHeartbeat() {
+            String ss="Status=Heartbeat";
+            try {
+                if (DD) Log.d(TAG,""+ss);
+                dos.writeInt(ss.length());
+                dos.writeChars(ss);
+            } catch (IOException e) {}
+        }
+
         public void cancel() {
             finished=true;
 
@@ -1161,90 +1183,101 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
 
         @Override
         public void handleMessage(Message msg) {
-            switch (msg.what) {
-                case CMD_FILEINFO:
-                    s=((String)msg.obj);
+            synchronized (MainActivity.this) {
+                switch (msg.what) {
+                    case CMD_FILEINFO:
+                        s = ((String) msg.obj);
 
-                    // set NowPlaying label text in UI
-                    //TextView nowPlayingLabel = (TextView) findViewById(R.id.nowPlaying);
-                    //nowPlayingLabel.setText(s);
+                        // set NowPlaying label text in UI
+                        //TextView nowPlayingLabel = (TextView) findViewById(R.id.nowPlaying);
+                        //nowPlayingLabel.setText(s);
 
-                    break;
-                case CMD_BUFFERSTART:
-                    break;
-                case CMD_BUFFEREND:
-                    Toast.makeText(MainActivity.this, "Finished streaming "+s, Toast.LENGTH_SHORT).show();
-                    break;
-                case CMD_PLAY:
-                    break;
-                case CMD_STOP:
-                    break;
-                case CMD_VOLUMEUP:
-                    break;
-                case CMD_VOLUMEDOWN:
-                    break;
-                case CMD_PAUSE:
-                    if (mControlThread!=null) mControlThread.sendPause();
-                    break;
-                case REFRESH_QUEUEVIEW:
-                    fillQueueListView();
-                    break;
+                        break;
+                    case CMD_BUFFERSTART:
+                        break;
+                    case CMD_BUFFEREND:
+                        Toast.makeText(MainActivity.this, "Finished streaming " + s, Toast.LENGTH_SHORT).show();
+                        break;
+                    case CMD_PLAY:
+                        break;
+                    case CMD_STOP:
+                        break;
+                    case CMD_VOLUMEUP:
+                        break;
+                    case CMD_VOLUMEDOWN:
+                        break;
+                    case CMD_PAUSE:
+                        if (mControlThread != null) mControlThread.sendPause();
+                        break;
+                    case REFRESH_QUEUEVIEW:
+                        fillQueueListView();
+                        break;
 
-                case STS_CONNECTED:
-                    getSupportActionBar().setBackgroundDrawable(new ColorDrawable(Color.rgb(0, 200, 0)));
-                    break;
+                    case STS_CONNECTED:
+                        getSupportActionBar().setBackgroundDrawable(new ColorDrawable(Color.rgb(0, 200, 0)));
+                        break;
 
-                case STS_DISCONNECTED:
-                    getSupportActionBar().setBackgroundDrawable(new ColorDrawable(Color.rgb(0, 0, 0)));
-                    break;
+                    case STS_DISCONNECTED:
+                        getSupportActionBar().setBackgroundDrawable(new ColorDrawable(Color.rgb(0, 0, 0)));
+                        break;
+                    case STS_CURRENTPOS:
+                        int currentPos = Integer.parseInt((String) msg.obj);
+                        int Hours = currentPos / (1000*60*60);
+                        int Minutes = (currentPos % (1000*60*60)) / (1000*60);
+                        int Seconds = ((currentPos % (1000*60*60)) % (1000*60)) / 1000;
 
-                case STS_PLAYFINISHED:
-                    if (!playQueueList.isEmpty()) {
-                        playQueueList.remove(0);
+                        Log.i(TAG,""+String.format("%02d",Hours)+":"+String.format("%02d",Minutes)+":"+String.format("%02d",Seconds));
 
-                        if (getSupportActionBar().getSelectedTab().getPosition()==QUEUE_TAB)
-                        {
-                            fillQueueListView();
-                        }
+                        mControlThread.sendHeartbeat();
 
+                        break;
+                    case STS_PLAYFINISHED:
                         if (!playQueueList.isEmpty()) {
+                            playQueueList.remove(0);
 
-                            if (mDataThread != null) {
-                                mDataThread.cancel();
-                                mDataThread = null;
+                            if (getSupportActionBar().getSelectedTab().getPosition() == QUEUE_TAB) {
+                                fillQueueListView();
                             }
 
-                            if (mAcceptThread != null) {
-                                mAcceptThread.cancel();
-                                mAcceptThread = null;
+                            if (!playQueueList.isEmpty()) {
+
+                                if (mDataThread != null) {
+                                    mDataThread.cancel();
+                                    mDataThread = null;
+                                }
+
+                                if (mAcceptThread != null) {
+                                    mAcceptThread.cancel();
+                                    mAcceptThread = null;
+                                }
+
+                                File selectedFile = new File(playQueueList.get(0).getName());
+
+                                if (D) Log.d(TAG, "Playing next " + selectedFile.getName());
+
+                                mControlThread.sendFileName(selectedFile.getName());
+                                mControlThread.sendFileSize(selectedFile.length());
+
+                                mState = STATE_LISTEN;
+                                mAcceptThread = new AcceptThread();
+                                mAcceptThread.start();
+
+                                mControlThread.sendBufferStart();
+                                mControlThread.sendPlay();
+
+                                // set the status for the listview pause button
+                                playQueueList.get(0).play();
+                            } else {
+                                if (D) Log.d(TAG, "Nothing to play in queue");
                             }
-
-                            File selectedFile = new File(playQueueList.get(0).getName());
-
-                            if (D) Log.d(TAG, "Playing next " + selectedFile.getName());
-
-                            mControlThread.sendFileName(selectedFile.getName());
-                            mControlThread.sendFileSize(selectedFile.length());
-
-                            mState = STATE_LISTEN;
-                            mAcceptThread = new AcceptThread();
-                            mAcceptThread.start();
-
-                            mControlThread.sendBufferStart();
-                            mControlThread.sendPlay();
-
-                            // set the status for the listview pause button
-                            playQueueList.get(0).play();
                         } else {
-                            if (D) Log.d(TAG,"Nothing to play in queue");
+                            if (D) Log.d(TAG, "Nothing in queue");
                         }
-                    } else {
-                        if (D) Log.d(TAG,"Nothing in queue");
-                    }
-                    break;
+                        break;
 
-                default:
+                    default:
 
+                }
             }
         }
     };
@@ -1334,13 +1367,11 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
         private final OutputStream mmOutStream;
         private final InputStream mmInStream;
 
-        int fileBufferSize;
-
         boolean terminateRequested=false;
 
         File f;
         FileInputStream fin=null;
-        byte[] fileContentPart=null;
+        byte[] fileChunk =null;
         int bytesToSendPart=0;
         int bytesToSend=0;
 
@@ -1359,8 +1390,6 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
             f=new File(playQueueList.get(0).getName());
             bytesToSend = (int) f.length();
 
-            fileBufferSize=2048;//mmSocket.getMaxTransmitPacketSize();
-
         }
 
         public void run() {
@@ -1369,32 +1398,66 @@ public class MainActivity extends AppCompatActivity implements ActionBar.TabList
             try {
                 fin = new FileInputStream(f.getAbsolutePath());
 
-                fileContentPart=new byte[fileBufferSize];
+                // would like to use mmSocket.getMaxTransmitPacketSize() but not available on early APIs
+                fileChunk =new byte[DATA_ACK_SIZE];
 
-                if (D) Log.d(TAG, "File size " + f.length() + " bytes (using " + fileBufferSize + " chunks)");
+                if (D) Log.d(TAG, "File size " + f.length() + " bytes (using " + DATA_ACK_SIZE + " chunks)");
+
+                byte[] sink=new byte[32*1024];
+
+                DataInputStream dis=new DataInputStream(mmInStream);
 
                 while (bytesToSend > 0) {
 
                     if (terminateRequested) break;
 
-                    int bytesRead = fin.read(fileContentPart, 0, fileContentPart.length);
+                    int n=dis.readInt();
+                    StringBuffer s = new StringBuffer(n);
+                    while (n > 0) {
+                        s.append(dis.readChar());
+                        n--;
+                    }
 
+                    if (DD) Log.d(TAG,""+dis.available()+" "+s.toString());
+
+                    if (s.indexOf("Status=DataAck")!=-1) {
+                        int bytesRead = fin.read(fileChunk, 0, fileChunk.length);
+
+                        try {
+
+                            mmOutStream.write(fileChunk, 0, bytesRead);
+
+                            bytesToSend -= bytesRead;
+
+                            if (DD) Log.d(TAG, "Sent " + bytesRead + " (left " +bytesToSend+")");
+
+                        } catch (IOException e) {
+                            Log.e(TAG, "Problem sending file " + e);
+                            break;
+                        }
+
+                    }
+/*
                     try {
-
-                        mmOutStream.write(fileContentPart, 0, bytesRead);
-
-                        bytesToSend-=bytesRead;
-
-                        //if (D) Log.d(TAG, "Sent " + bytesRead + " (left " +bytesToSend+")");
-
+                        int avail=mmInStream.available();
+                        if (avail>0) {
+                            int bytes=0;
+                            if (avail > sink.length) {
+                                bytes = mmInStream.read(sink, 0, sink.length);
+                            } else {
+                                bytes = mmInStream.read(sink, 0, avail);
+                            }
+                            if (D) Log.d(TAG, "DataThread keepalive");
+                        }
                     } catch (IOException e) {
-                        Log.e(TAG, "Problem sending file " + e);
+                        Log.e(TAG, "Problem reading heartbeat");
                         break;
                     }
+*/
                 }
 
                 fin.close();
-                fileContentPart=null;
+                fileChunk =null;
                 System.gc();
 
             } catch (FileNotFoundException e) {
